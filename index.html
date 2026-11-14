@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Paying for Fewer Tokens</title>
+<meta name="description" content="How I cut ShopAssist's LLM cost per ticket by 87% (Q1) and 98% (Q2) while keeping every answer correct.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Blog layout: one ~680px reading column. Ink-and-paper neutrals; blue = after/solution, orange = before/baseline. Geist for prose and numbers (tabular figures), JetBrains Mono for code. */
+:root {
+  --bg: #fbfbfa;
+  --surface: #ffffff;
+  --fg: #15181c;
+  --prose: #2b3038;
+  --muted: #646b76;
+  --faint: #8d939c;
+  --line: #e6e6e3;
+  --chip: #f2f2f0;
+  --accent: #2f55c8;
+  --accent-soft: #e9eefb;
+  --cost: #c2551f;
+  --cost-soft: #fbeee6;
+  --track: #eeeeeb;
+  --font: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; /* numbers: Geist with tabular figures */
+  --code: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace; /* code only */
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1013; --surface: #15181d; --fg: #eef0f3; --prose: #cdd2d9; --muted: #a0a7b2; --faint: #7a818c;
+    --line: #262a31; --chip: #1c2026; --accent: #8aa4f2; --accent-soft: #1b2440;
+    --cost: #ec8b5e; --cost-soft: #33221a; --track: #1f2329; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1013; --surface: #15181d; --fg: #eef0f3; --prose: #cdd2d9; --muted: #a0a7b2; --faint: #7a818c;
+  --line: #262a31; --chip: #1c2026; --accent: #8aa4f2; --accent-soft: #1b2440;
+  --cost: #ec8b5e; --cost-soft: #33221a; --track: #1f2329; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; accent-color: var(--accent); scrollbar-color: var(--faint) var(--bg); }
+::selection { background: var(--accent-soft); color: var(--fg); }
+body {
+  margin: 0; background: var(--bg); color: var(--prose);
+  font-family: var(--font); font-size: 18px; line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+.page {
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
+  padding-block: 72px 104px;
+}
+article { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+
+h1, h2, h3 { color: var(--fg); margin: 0; text-wrap: balance; letter-spacing: -0.02em; }
+h1 { font-size: clamp(2.3rem, 6vw, 3.3rem); line-height: 1.08; font-weight: 700; }
+h2 { font-size: 1.6rem; line-height: 1.25; font-weight: 650; margin-top: 40px; }
+h3 { font-size: 1.1rem; line-height: 1.35; font-weight: 600; margin-top: 12px; }
+p { margin: 0; }
+strong { color: var(--fg); font-weight: 600; }
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+code { font-family: var(--code); font-size: 0.84em; background: var(--chip); padding: 0.12em 0.4em; border-radius: 5px; color: var(--fg); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* post header */
+.post-head { display: flex; flex-direction: column; gap: 18px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+.dek { font-size: 1.25rem; line-height: 1.55; color: var(--muted); }
+.byline { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.88rem; color: var(--faint); }
+.byline span + span::before { content: "·"; margin-right: 14px; }
+.theme-toggle { margin-left: auto; font: inherit; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 6px; padding: 1px 10px; cursor: pointer; }
+.theme-toggle:hover { color: var(--fg); border-color: var(--muted); }
+.theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* figures */
+figure { margin: 14px 0; display: flex; flex-direction: column; gap: 12px; }
+figcaption { font-size: 0.85rem; line-height: 1.55; color: var(--faint); }
+figcaption strong { color: var(--muted); }
+figure picture, figure img { display: block; width: 100%; height: auto; }
+code, pre, .formula, .calc, .passbar { font-variant-ligatures: none; } /* show <= as typed */
+.panel { display: flex; flex-direction: column; gap: 14px; }
+
+.formula { font-family: var(--code); font-size: 0.92rem; background: var(--chip); color: var(--fg); border-radius: 10px; padding: 14px 18px; overflow-x: auto; white-space: nowrap; }
+
+
+
+pre.code { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; font-family: var(--code); font-size: 0.76rem; line-height: 1.7; color: var(--fg); overflow-x: auto; }
+pre.code .role { color: var(--faint); }
+.calc { font-family: var(--code); font-size: 0.9rem; color: var(--fg); }
+.calc b { color: var(--fg); }
+
+/* before/after step table */
+table.steps td:first-child { font-weight: 600; color: var(--fg); white-space: nowrap; }
+table.steps .r { text-align: right; }
+table.steps tr.sum td { border-top: 1px solid var(--fg); font-weight: 600; color: var(--fg); }
+table.steps tr.sum td:last-child { font-weight: 400; color: var(--muted); }
+
+
+
+blockquote.pull { margin: 18px 0; padding: 22px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 1.45rem; line-height: 1.45; color: var(--fg); font-weight: 500; letter-spacing: -0.015em; text-wrap: balance; }
+
+
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; line-height: 1.5; border-top: 1px solid var(--fg); border-bottom: 1px solid var(--fg); }
+table.steps { min-width: 520px; }
+th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th:last-child, td:last-child { padding-right: 0; }
+th { font-weight: 600; font-size: 0.8rem; color: var(--muted); }
+td { color: var(--prose); }
+td.n { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--fg); }
+tr:last-child td { border-bottom: 0; }
+
+.passbar { font-family: var(--code); font-size: 0.86rem; line-height: 1.7; background: var(--chip); color: var(--fg); border-radius: 10px; padding: 12px 16px; }
+.passbar span { color: var(--faint); }
+
+/* end matter */
+.end { margin-top: 36px; padding-top: 28px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 16px; }
+.links { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 0.92rem; }
+.links a { text-decoration-color: var(--line); text-decoration-thickness: 1px; }
+.links a:hover { text-decoration-color: currentColor; }
+pre.run { margin: 0; background: var(--chip); border-radius: 10px; padding: 14px 16px; font-family: var(--code); font-size: 0.8rem; line-height: 1.75; color: var(--fg); overflow-x: auto; }
+pre.run .c { color: var(--faint); }
+
+@media (max-width: 700px) {
+  body { font-size: 17px; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+<article>
+
+<header class="post-head">
+  <h1>Paying for fewer tokens</h1>
+  <p class="dek">How I cut an LLM support bot's cost per ticket by 87% and 98% without changing a single answer, and why I stopped where I did.</p>
+  <div class="byline"><span>Sarvan Kumar</span><span>14 November 2026</span><span>6 min read</span><button class="theme-toggle" type="button" id="theme-toggle">Dark mode</button></div>
+</header>
+
+<figure>
+  <picture>
+    <source srcset="blog/img/q1-bill-dark.svg" media="(prefers-color-scheme: dark)">
+    <img src="blog/img/q1-bill-light.svg" width="680" height="120" alt="Ticket T-1001 before: 8,919 points (1,584 input + 7,335 output). After v3: 1,260 points (570 input + 690 output).">
+  </picture>
+  <figcaption>Ticket T-1001, same answer both times. Light shade: input. Dark shade: output.</figcaption>
+</figure>
+
+<p>ShopAssist is a Tier-1 support copilot for an online shop. For every ticket it reads the customer's message and the order, picks one of four actions (<code>REFUND</code>, <code>REPLACE</code>, <code>SEND_ARTICLE</code> or <code>ESCALATE_TIER2</code>) and cites the help-center article that backs the decision.</p>
+
+<p>The assignment gave me two working versions of that bot. Both already answered every ticket correctly. My job was to keep it that way and make each ticket much cheaper: at most 3,000 points for Question 1, which uses a single LLM call, and at most 2,500 for Question 2, a four-step pipeline.</p>
+
+<p>On average, Question 1 now costs 1,163 points per ticket instead of 8,878, and Question 2 costs 1,376 instead of 73,415. Every ticket still gets the same answer, and all 23 tests pass.</p>
+
+<h2>First, read the bill</h2>
+
+<p>Before changing any code, I looked at how a call is charged. Every prompt token costs 3 points and every answer token costs 15. There's a cheaper cached rate, but it only applies when the same prompt start of at least 1,024 tokens repeats.</p>
+
+<figure>
+  <p class="formula">points = uncached_input × 3 + cached_input × 0.3 + output × 15</p>
+  <figcaption>From <code>shared/billing.py</code>.</figcaption>
+</figure>
+
+<p>Then I read the model code. It's a local simulator, and two details in it ended up mattering more than anything else.</p>
+
+<p>The first is a list of phrases: <code>step by step</code>, <code>full reasoning</code>, <code>double-check</code>, <code>restate the ticket</code>, <code>quote the</code> and <code>detailed plan</code>. If any of them appears in the prompt, the simulator writes about 490 tokens instead of about 40. At 15 points a token, that's roughly 6,700 extra points on every call.</p>
+
+<p>The second is a floor. Every call returns a short JSON of 36 to 46 tokens, so each LLM call costs at least 540 to 690 points, however good the prompt is.</p>
+
+<p>So the plan was simple. Never use those phrases, send less input, and make as few calls as possible.</p>
+
+<h2>Question 1: one call, 8,919 points</h2>
+
+<p>On ticket T-1001 the original prompt cost 8,919 points, and 82% of that was the answer. The cause was one sentence in the system prompt: <em>Think step by step. Write full reasoning, quote any article you rely on, then output JSON.</em> It contains two of the six trigger phrases.</p>
+
+<p>Deleting that sentence took the ticket from 8,919 to 2,229 points. Then I cut the waste in the input: a random run id in every prompt, few-shot examples that repeated the rules, article ids printed twice, and indented JSON. That got it to 1,710. This was v1, already well inside the 3,000 budget.</p>
+
+<p>After v1 the answer was a fixed 46 tokens, so only the input could shrink. For v2 I rewrote the five help articles as a small rule table, dropped the order fields no rule reads (order id, SKU and title), and sent only the customer's own messages. For v3 I wrote each rule in the order data's own field names, like <code>delivered_days_ago&lt;=7 REPLACE</code>. That's shorter, and I think it's harder for a model to misread than "delivered 7 or fewer days ago".</p>
+
+<figure>
+  <picture>
+    <source srcset="blog/img/q1-steps-dark.svg" media="(prefers-color-scheme: dark)">
+    <img src="blog/img/q1-steps-light.svg" width="680" height="330" alt="Points on T-1001 after each change: baseline 8,919; remove long-answer words 2,229; trim input (v1) 1,710; rule table 1,452; drop identifiers 1,392; customer messages only (v2) 1,332; rules in field names (v3) 1,260." loading="lazy">
+  </picture>
+  <figcaption>Points on T-1001 after each change.</figcaption>
+</figure>
+
+<p>This is everything v3 sends for that ticket, 190 tokens in total:</p>
+
+<figure>
+<pre class="code"><span class="role">SYSTEM:</span>
+First match wins, else ESCALATE_TIER2. JSON only: action,kb_article,customer_reply (1 sentence).
+<span class="rule">subscription-cooling-off: subscription_age_days&lt;=30 REFUND else SEND_ARTICLE</span>
+<span class="rule">digital-license-no-refund: license_revealed SEND_ARTICLE</span>
+<span class="rule">custom-items-no-replace: customized+damage_reported ESCALATE_TIER2</span>
+<span class="rule">damage-replacement-7-days: damage_reported, delivered_days_ago&lt;=7 REPLACE</span>
+<span class="rule">returns-within-30-days: physical, !opened, delivered_days_ago&lt;=30 REFUND</span>
+
+<span class="role">USER:</span>
+CUSTOMER:
+Hi, I'd like a refund for the wireless headphones. They arrived 10 days ago and I never opened the box.
+ORDER_SNAPSHOT:
+{"product_type":"physical","delivered_days_ago":10,"opened":false,"license_revealed":false,"customized":false,"damage_reported":false}
+END_SNAPSHOT</pre>
+  <figcaption><span class="calc">190 × 3 + 46 × 15 = 570 + 690 = <b>1,260 points</b></span></figcaption>
+</figure>
+
+<figure>
+  <picture>
+    <source srcset="blog/img/q1-result-dark.svg" media="(prefers-color-scheme: dark)">
+    <img src="blog/img/q1-result-light.svg" width="680" height="223" alt="Question 1 average points per ticket against the 3,000 budget: baseline 8,878, v1 1,584, v2 1,235, v3 1,163." loading="lazy">
+  </picture>
+  <figcaption>Average points per public ticket.</figcaption>
+</figure>
+
+<h2>Question 2: four calls that didn't need to be</h2>
+
+<p>Question 2 runs the same decision through four steps: triage, retrieve, compose and audit. In the original, every step was an LLM call, and two of them re-read up to 120,000 characters of a help center more than 210,000 tokens long. One ticket cost about 73,400 points.</p>
+
+<p>When I opened that help center, 99.9% of it was filler. The real policy is the same five short articles as in Question 1, about 155 tokens. The rest is one internal routing note repeated over and over, and the note itself says it doesn't change any policy.</p>
+
+<figure>
+  <picture>
+    <source srcset="blog/img/q2-help-center-dark.svg" media="(prefers-color-scheme: dark)">
+    <img src="blog/img/q2-help-center-light.svg" width="680" height="218" alt="A grid of 1,139 grey squares, each about 185 tokens of help center, with one blue square holding all of the real policy." loading="lazy">
+  </picture>
+  <figcaption>Each square is about 185 tokens of help center.</figcaption>
+</figure>
+
+<p>Then I did the arithmetic. Even with tiny prompts, four LLM calls spend at least 4 × 540 = 2,160 points on output alone. That's 86% of the 2,500 budget before a single prompt token is counted.</p>
+
+<p>I also checked whether an LLM triage step could pay for itself by sending compose fewer articles. Here it can't. The call would cost about 1,000 points and save about 360. It only starts paying off above roughly 330 tokens of real policy per ticket, and this whole help center has 155.</p>
+
+<p>So I kept all four steps, in the same order, and let only one of them call the LLM. Triage is now code that builds a short brief of the ticket. Retrieve is code that pulls the five policy articles out of the help center and skips the filler. Compose is the one LLM call, and it makes the decision. Audit is a code check: it accepts the answer only if the action is one of the four allowed and the article is one that retrieve returned. Anything else goes to a human.</p>
+
+<figure>
+  <div class="table-wrap">
+    <table class="steps">
+      <thead><tr><th>Step</th><th class="r">Before</th><th class="r">After</th><th>What changed</th></tr></thead>
+      <tbody>
+        <tr><td>triage</td><td class="n r">32,718</td><td class="n r">0</td><td>Now code. Used to re-read 120k characters of help center.</td></tr>
+        <tr><td>retrieve</td><td class="n r">2,352</td><td class="n r">0</td><td>Now code. Used to ask the LLM to print the articles.</td></tr>
+        <tr><td>compose</td><td class="n r">10,929</td><td class="n r"><strong>1,305</strong></td><td>The only LLM call left: 255 tokens in, 36 out.</td></tr>
+        <tr><td>audit</td><td class="n r">27,489</td><td class="n r">0</td><td>Now code. Rejects go to a human.</td></tr>
+        <tr class="sum"><td>total</td><td class="n r">73,488</td><td class="n r"><strong>1,305</strong></td><td>4 LLM calls before, 1 after.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <figcaption>Ticket T-1004, points per step.</figcaption>
+</figure>
+
+<p>That was v1 for Question 2, at 1,389 to 1,557 points per ticket. v2 makes two small cuts to the one remaining call. It strips Markdown bold from the retrieved articles, so the words stay and only the asterisks go, and it shortens the instruction to a compact list of actions. That saves another 84 points on every ticket.</p>
+
+<figure>
+  <picture>
+    <source srcset="blog/img/q2-result-dark.svg" media="(prefers-color-scheme: dark)">
+    <img src="blog/img/q2-result-light.svg" width="680" height="181" alt="Question 2 average points per ticket against the 2,500 budget: baseline 73,415, v1 1,460, v2 1,376." loading="lazy">
+  </picture>
+  <figcaption>Average points per public ticket, to scale.</figcaption>
+</figure>
+
+<h2>What I chose not to do</h2>
+
+<p>I could have reported lower numbers. I measured four more ideas and shipped none of them. Two only looked cheaper because of how the simulator works, one cost more than it saved, and one would go stale.</p>
+
+<figure>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Idea</th><th>Points</th><th>Why not</th></tr></thead>
+      <tbody>
+        <tr><td>Pad prompts for the cache price</td><td class="n">−45 to −116</td><td>Only fools the simulator</td></tr>
+        <tr><td>Send only the top 2 articles</td><td class="n">−270</td><td>Drops the right article; tests still pass</td></tr>
+        <tr><td>Add an LLM triage step</td><td class="n">+640</td><td>Costs 1,000 to save 360</td></tr>
+        <tr><td>Hand-written rules in Q2</td><td class="n">−250</td><td>Goes stale when articles change</td></tr>
+      </tbody>
+    </table>
+  </div>
+</figure>
+
+<p>The top-2 test taught me the most. The simulator picks its answer from the order data and never looks at the articles. So when the correct article was missing from the prompt, it still answered correctly, and every test still passed. A real model only knows what's in its prompt, so it could easily get those tickets wrong.</p>
+
+<blockquote class="pull">With the correct article missing from the prompt, every test still passed.</blockquote>
+
+<p>That's why I stopped where I did. Any saving past this point was one the tests had no way to check.</p>
+
+<h2>How I know it works</h2>
+
+<p>All 23 tests pass, for every version that's still in the code. They check the action and the article on every public ticket and on the hidden T-1091, and they check that each ticket stays within budget: 3,000 points for Question 1 and 2,500 for Question 2.</p>
+
+<p>A few tests guard the shortcuts I took. One feeds the audit step a broken reply, an unknown action and a made-up article, and checks that each one goes to a human. One scans every prompt for the trigger phrases. One checks that Question 1's rule table has exactly one rule per help article, so it can't drift from the help center unnoticed. The last one checks that each version is cheaper than the one before it on every public ticket.</p>
+
+<p class="passbar"><span>$</span> pytest tests/<br>23 passed in 6 min 18 s</p>
+
+<h2>What I'd take to the next LLM project</h2>
+
+<p>Read the bill before touching the prompt. Answer tokens cost five times as much as prompt tokens here, and the biggest single saving, 6,690 points on one ticket, came from deleting one sentence that asked for reasoning.</p>
+
+<p>Count the calls, too. Every call has a minimum cost, and a step that only formats, looks something up or checks an answer doesn't need a model.</p>
+
+<p>And be suspicious of a saving your tests can't check. Some of the cheapest numbers I found were cheap only because the test setup couldn't see what they broke.</p>
+
+<footer class="end">
+  <div class="links">
+    <a href="https://github.com/sarvan-2187/intern-assignment-llm-cost-optimization/blob/main/SOLUTIONS/Q1.md">Question 1 write-up</a>
+    <a href="https://github.com/sarvan-2187/intern-assignment-llm-cost-optimization/blob/main/SOLUTIONS/Q2.md">Question 2 write-up</a>
+    <a href="https://github.com/sarvan-2187/intern-assignment-llm-cost-optimization/blob/main/question1/agent.py">question1/agent.py</a>
+    <a href="https://github.com/sarvan-2187/intern-assignment-llm-cost-optimization/blob/main/question2/agent.py">question2/agent.py</a>
+    <a href="https://github.com/sarvan-2187/intern-assignment-llm-cost-optimization">Repository</a>
+  </div>
+<pre class="run"><span class="c"># reproduce every number in this post</span>
+pip install -r requirements.txt
+python question1/run.py      <span class="c"># Q1 v3 per-call breakdown  (or: run.py v2)</span>
+python question2/run.py      <span class="c"># Q2 v2 per-step breakdown  (or: run.py v1)</span>
+pytest -q tests/             <span class="c"># 23 tests, about 6 minutes</span></pre>
+</footer>
+
+</article>
+</div>
+<script>
+// Light/dark toggle. Without a saved choice the page follows the system setting.
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById("theme-toggle");
+  var system = window.matchMedia("(prefers-color-scheme: dark)");
+  function current() { return root.dataset.theme || (system.matches ? "dark" : "light"); }
+  function label() { btn.textContent = current() === "dark" ? "Light mode" : "Dark mode"; }
+  function apply(theme) {
+    root.dataset.theme = theme;
+    // charts ship as -light/-dark SVG pairs; point every <picture> at the chosen one
+    document.querySelectorAll("picture source").forEach(function (s) {
+      s.media = theme === "dark" ? "all" : "not all";
+    });
+    label();
+  }
+  var saved = null;
+  try { saved = localStorage.getItem("theme"); } catch (e) {}
+  if (saved === "light" || saved === "dark") apply(saved); else label();
+  system.addEventListener("change", function () { if (!root.dataset.theme) label(); });
+  btn.addEventListener("click", function () {
+    var next = current() === "dark" ? "light" : "dark";
+    apply(next);
+    try { localStorage.setItem("theme", next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
