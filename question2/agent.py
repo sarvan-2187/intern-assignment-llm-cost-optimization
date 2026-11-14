@@ -1,15 +1,25 @@
 from __future__ import annotations
 
-import json
-import uuid
 from dataclasses import dataclass
 
 from shared.billing import CostSession
-from shared.kb import expanded_help_center_blob, title_index
+from shared.kb import article_ids, load_article
 from shared.llm import ChatMessage, LlmClient
-from shared.tools import format_thread, get_order, get_ticket
 
-from question1.agent import parse_resolution
+from question1.agent import parse_resolution, ticket_brief
+
+ACTIONS = ("REFUND", "REPLACE", "SEND_ARTICLE", "ESCALATE_TIER2")
+
+# No reasoning/verbosity asks anywhere: output tokens cost 5x input.
+COMPOSE_V1 = (
+    "Pick an action (REFUND, REPLACE, SEND_ARTICLE, ESCALATE_TIER2) and the kb_article "
+    "that backs it, using only these articles; none fits -> ESCALATE_TIER2. "
+    "JSON only: action,kb_article,customer_reply (1 sentence).\nARTICLES:\n"
+)
+COMPOSE_V2 = (
+    "Actions: REFUND, REPLACE, SEND_ARTICLE, ESCALATE_TIER2 (if no article fits). "
+    "Cite the backing article. JSON only: action,kb_article,customer_reply (1 sentence).\n"
+)
 
 
 @dataclass
@@ -19,115 +29,61 @@ class TicketResolution:
 
 
 class SupportPipeline:
-    """Same product as Question 1 — triage, retrieve, compose, audit."""
+    """Same product as Question 1 — triage, retrieve, compose, audit (v2, graded).
+
+    Only compose calls the LLM: each call costs >= ~600 points of output, more than
+    the whole policy text it could save. Triage, retrieve and audit are code.
+    """
+
+    INSTRUCTIONS = COMPOSE_V2
+    STRIP_MARKDOWN = True
 
     def __init__(self, session: CostSession | None = None):
         self.session = session or CostSession()
         self.llm = LlmClient(self.session)
-        self.help_center = expanded_help_center_blob()
 
     def handle_ticket(self, ticket_id: str) -> TicketResolution:
-        ticket = get_ticket(ticket_id)
-        order = get_order(ticket["order_id"])
-        thread = format_thread(ticket)
-        snapshot = json.dumps(order, indent=2)
+        brief = self._triage(ticket_id)
+        articles = self._retrieve()
+        draft = self._compose(brief, articles)
+        return self._audit(draft, articles)
 
-        triage = self._triage(ticket_id, thread, snapshot)
-        retrieved = self._retrieve(triage, snapshot)
-        draft = self._compose(ticket_id, thread, snapshot, triage, retrieved)
-        final = self._audit(ticket_id, thread, snapshot, triage, retrieved, draft)
-        parsed = parse_resolution(final)
-        return TicketResolution(parsed.action, parsed.kb_article)
+    def _triage(self, ticket_id: str) -> str:
+        """Code: the facts compose needs — customer's words + decision fields."""
+        return ticket_brief(ticket_id)
 
-    def _triage(self, ticket_id: str, thread: str, snapshot: str) -> str:
-        messages = [
-            ChatMessage(
-                "system",
-                "\n".join(
-                    [
-                        f"trace-{uuid.uuid4()}",
-                        "Triage node: restate the ticket step by step and list candidate kb articles.",
-                        f"ARTICLE TITLES:\n{title_index(500)}",
-                        self.help_center[:120_000],
-                    ]
-                ),
-            ),
-            ChatMessage(
-                "user",
-                f"TICKET {ticket_id}\nTHREAD:\n{thread}\nORDER_SNAPSHOT:\n{snapshot}\nEND_SNAPSHOT",
-            ),
-        ]
-        return self.llm.chat("triage", messages)
+    def _retrieve(self) -> dict[str, str]:
+        """Code: policy articles only; the ~210k tokens of routing notes carry no policy."""
+        # ponytail: returns every policy article (~145 tokens); add top-k ranking once
+        # policy text passes ~330 tokens/ticket, the point where an LLM triage pays for itself
+        articles = {aid: load_article(aid).split("\n", 1)[1].strip() for aid in article_ids()}
+        if self.STRIP_MARKDOWN:  # formatting only; the words are unchanged
+            articles = {a: b.replace("**", "") for a, b in articles.items()}
+        return articles
 
-    def _retrieve(self, triage: str, snapshot: str) -> str:
-        messages = [
-            ChatMessage(
-                "system",
-                "Retrieve node: print full text of the eight most relevant help articles.",
-            ),
-            ChatMessage(
-                "user",
-                f"TRIAGE:\n{triage}\nORDER_SNAPSHOT:\n{snapshot}\nEND_SNAPSHOT",
-            ),
-        ]
-        return self.llm.chat("retrieve", messages)
+    def _compose(self, brief: str, articles: dict[str, str]) -> str:
+        system = self.INSTRUCTIONS + "\n".join(f"{a}: {b}" for a, b in articles.items())
+        return self.llm.chat(
+            "compose", [ChatMessage("system", system), ChatMessage("user", brief)]
+        )
 
-    def _compose(
-        self,
-        ticket_id: str,
-        thread: str,
-        snapshot: str,
-        triage: str,
-        retrieved: str,
-    ) -> str:
-        messages = [
-            ChatMessage(
-                "system",
-                "Compose node: full reasoning, then JSON with action, kb_article, customer_reply.",
-            ),
-            ChatMessage(
-                "user",
-                "\n\n".join(
-                    [
-                        f"TICKET {ticket_id}",
-                        f"THREAD:\n{thread}",
-                        f"ORDER_SNAPSHOT:\n{snapshot}\nEND_SNAPSHOT",
-                        f"TRIAGE:\n{triage}",
-                        f"ARTICLES:\n{retrieved}",
-                        f"TRIAGE AGAIN:\n{triage}",
-                    ]
-                ),
-            ),
-        ]
-        return self.llm.chat("compose", messages)
+    def _audit(self, draft: str, articles: dict[str, str]) -> TicketResolution:
+        """Code guardrail: a known action backed by a retrieved article, else a human."""
+        try:
+            r = parse_resolution(draft)
+        except (ValueError, KeyError):  # no JSON / bad JSON / missing field
+            return TicketResolution("ESCALATE_TIER2", "")
+        kb = r.kb_article if r.kb_article in articles else ""
+        if r.action not in ACTIONS or not kb:
+            return TicketResolution("ESCALATE_TIER2", kb)
+        return TicketResolution(r.action, kb)
 
-    def _audit(
-        self,
-        ticket_id: str,
-        thread: str,
-        snapshot: str,
-        triage: str,
-        retrieved: str,
-        draft: str,
-    ) -> str:
-        messages = [
-            ChatMessage(
-                "system",
-                "Audit node: double-check policy, restate ticket, rewrite JSON output.",
-            ),
-            ChatMessage(
-                "user",
-                "\n\n".join(
-                    [
-                        self.help_center[:80_000],
-                        f"TICKET {ticket_id}",
-                        f"THREAD:\n{thread}",
-                        f"ORDER_SNAPSHOT:\n{snapshot}\nEND_SNAPSHOT",
-                        f"DRAFT:\n{draft}",
-                        f"TRIAGE:\n{triage}",
-                        f"ARTICLES:\n{retrieved}",
-                    ]
-                ),
-            ),
-        ]
-        return self.llm.chat("audit", messages)
+
+class SupportPipelineV1(SupportPipeline):
+    """v1: the original compose instruction, Markdown kept in articles."""
+
+    INSTRUCTIONS = COMPOSE_V1
+    STRIP_MARKDOWN = False
+
+
+VERSIONS = {"v1": SupportPipelineV1, "v2": SupportPipeline}

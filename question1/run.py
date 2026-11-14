@@ -8,26 +8,43 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from question1.agent import SupportCopilot  # noqa: E402
+from question1.agent import VERSIONS  # noqa: E402
 
 PUBLIC = ["T-1001", "T-1002", "T-1003", "T-1004"]
 
 
 def main() -> None:
-    copilot = SupportCopilot()
+    version = sys.argv[1] if len(sys.argv) > 1 else "v3"  # python run.py [v2|v3]
+    copilot_cls = VERSIONS[version]
     rows = []
     for tid in PUBLIC:
+        copilot = copilot_cls()  # fresh session = per-ticket billing
         res = copilot.handle_ticket(tid)
         rows.append(
             {
                 "ticket_id": tid,
                 "action": res.action,
                 "kb_article": res.kb_article,
+                "calls": [
+                    {
+                        "label": c.label,
+                        "input_tokens": c.input_tokens,
+                        "cached_input_tokens": c.cached_prefix_tokens,
+                        "output_tokens": c.output_tokens,
+                        "points": c.points(),
+                    }
+                    for c in copilot.session.calls
+                ],
+                "points": copilot.session.total_points(),
             }
         )
     print(
         json.dumps(
-            {"resolutions": rows, "total_points": copilot.session.total_points()},
+            {
+                "version": version,
+                "resolutions": rows,
+                "total_points": sum(r["points"] for r in rows),
+            },
             indent=2,
         )
     )
