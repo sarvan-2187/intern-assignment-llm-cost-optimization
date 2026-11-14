@@ -14,6 +14,8 @@
 
 ## Solution
 
+Blog post walking through the whole solution: **[sarvan-intern-assignment-blog.vercel.app](https://sarvan-intern-assignment-blog.vercel.app/)**
+
 | | Target | Baseline | **Solution** | Write-up |
 |---|---:|---:|---:|---|
 | Q1: one LLM call per ticket | ≤ 3,000 | 8,878 | **1,163** (−87%) | [SOLUTIONS/Q1.md](SOLUTIONS/Q1.md) |
