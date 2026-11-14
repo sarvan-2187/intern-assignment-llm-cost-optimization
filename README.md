@@ -12,6 +12,15 @@
 | Q1 — single call | [question1/agent.py](question1/agent.py) | [questions/question-1.md](questions/question-1.md) |
 | Q2 — pipeline | [question2/agent.py](question2/agent.py) | [questions/question-2.md](questions/question-2.md) |
 
+## Solution
+
+| | Target | Baseline | **Solution** | Write-up |
+|---|---:|---:|---:|---|
+| Q1: one LLM call per ticket | ≤ 3,000 | 8,878 | **1,163** (−87%) | [SOLUTIONS/Q1.md](SOLUTIONS/Q1.md) |
+| Q2: four-node pipeline | ≤ 2,500 | 73,415 | **1,376** (−98%) | [SOLUTIONS/Q2.md](SOLUTIONS/Q2.md) |
+
+Average points per public ticket. All answers stay correct, including the holdout T-1091; all 23 tests pass.
+
 ## Run
 
 ```bash
